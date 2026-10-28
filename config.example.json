@@ -1,0 +1,11 @@
+{
+  "addr": "127.0.0.1:7777",
+  "repos": [
+    {"path": "~/code/my-app", "base_branch": "main"},
+    {"path": "~/code/other-repo", "base_branch": "develop"}
+  ],
+  "session_max_age_days": 14,
+  "editor_command": ["code"],
+  "sessions_refresh_seconds": 3,
+  "worktrees_refresh_seconds": 30
+}

@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>devboard</title>
+<style>
+  :root {
+    --bg: #f6f6f4;
+    --surface: #ffffff;
+    --border: #e3e2de;
+    --text: #1f1f1d;
+    --muted: #6d6b66;
+    --accent: #c2410c;
+    --accent-soft: #fdebdf;
+    --working: #2563eb;
+    --working-soft: #e3ecfd;
+    --review: #7c3aed;
+    --review-soft: #efe7fd;
+    --ok: #15803d;
+    --ok-soft: #e2f4e8;
+    --mono: ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #161615;
+      --surface: #1f1f1e;
+      --border: #33322f;
+      --text: #ecebe7;
+      --muted: #9a988f;
+      --accent: #fb923c;
+      --accent-soft: #3a2416;
+      --working: #60a5fa;
+      --working-soft: #172338;
+      --review: #a78bfa;
+      --review-soft: #261d3b;
+      --ok: #4ade80;
+      --ok-soft: #14291b;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+  a { color: inherit; }
+  header {
+    position: sticky; top: 0; z-index: 1;
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    padding: 12px 24px;
+    background: var(--bg);
+    border-bottom: 1px solid var(--border);
+  }
+  header h1 { font-size: 16px; margin: 0; }
+  header .spacer { flex: 1; }
+  header .status { color: var(--muted); font-size: 12px; }
+  header .status.offline { color: var(--accent); }
+  main { max-width: 1100px; margin: 0 auto; padding: 16px 24px 48px; }
+  h2 {
+    font-size: 12px; text-transform: uppercase; letter-spacing: .06em;
+    color: var(--muted); margin: 28px 0 10px;
+  }
+  h2 .count { font-weight: 400; }
+  .empty { color: var(--muted); font-style: italic; }
+  .errors {
+    margin-top: 16px; padding: 10px 14px; border-radius: 8px;
+    background: var(--accent-soft); color: var(--accent); font-size: 13px;
+  }
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px 14px;
+    margin-bottom: 10px;
+  }
+  .card.attention { border-left: 3px solid var(--accent); }
+  .card.working { border-left: 3px solid var(--working); }
+  .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .branch { font-family: var(--mono); font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+  .repo { color: var(--muted); font-size: 12px; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 1px 8px; border-radius: 999px;
+    font-size: 12px; white-space: nowrap;
+    background: var(--bg); color: var(--muted);
+    text-decoration: none;
+  }
+  a.chip:hover { color: var(--text); }
+  .chip.attention { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+  .chip.open { background: var(--ok-soft); color: var(--ok); }
+  .chip.dirty { background: var(--accent-soft); color: var(--accent); }
+  .actions { margin-left: auto; display: flex; gap: 6px; }
+  button {
+    font: inherit; font-size: 12px;
+    padding: 3px 10px; border-radius: 6px;
+    border: 1px solid var(--border); background: var(--surface); color: var(--text);
+    cursor: pointer;
+  }
+  button:hover { border-color: var(--muted); }
+  .sessions { list-style: none; margin: 10px 0 0; padding: 0; }
+  .session {
+    display: grid; grid-template-columns: 10px 1fr auto; gap: 2px 10px;
+    padding: 6px 0; border-top: 1px dashed var(--border);
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 6px; background: var(--border); }
+  .dot.waiting { background: var(--accent); }
+  .dot.review { background: var(--review); }
+  .dot.working { background: var(--working); animation: pulse 1.4s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: .3; } }
+  .session a.title { text-decoration: none; font-weight: 500; }
+  .session a.title:hover { text-decoration: underline; }
+  .session .when { color: var(--muted); font-size: 12px; white-space: nowrap; }
+  .session .detail {
+    grid-column: 2 / 4; color: var(--muted); font-size: 13px;
+    display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+  }
+  .session.waiting .detail { color: var(--text); }
+  .state { font-size: 11px; padding: 0 6px; border-radius: 4px; margin-left: 6px; }
+  .state.waiting { background: var(--accent-soft); color: var(--accent); }
+  .state.review { background: var(--review-soft); color: var(--review); }
+  .state.working { background: var(--working-soft); color: var(--working); }
+  details summary { cursor: pointer; color: var(--muted); margin: 8px 0; }
+  @media (max-width: 640px) {
+    header, main { padding-left: 16px; padding-right: 16px; }
+    .actions { margin-left: 0; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>devboard</h1>
+  <span class="status" id="status">connecting…</span>
+  <span class="spacer"></span>
+  <a class="chip" href="claude://code/needs-input">Waiting in Claude ↗</a>
+  <button id="refresh" type="button">Refresh</button>
+</header>
+<main id="board"></main>
+
+<script>
+const boardEl = document.getElementById('board');
+const statusEl = document.getElementById('status');
+let board = null;
+
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c =>
+  ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
+
+function ago(iso) {
+  const t = Date.parse(iso);
+  if (!t || t < 0) return '';
+  const s = Math.max(0, (Date.now() - t) / 1000);
+  if (s < 60) return 'now';
+  if (s < 3600) return Math.floor(s / 60) + ' min';
+  if (s < 86400) return Math.floor(s / 3600) + ' h';
+  return Math.floor(s / 86400) + ' d';
+}
+
+const stateLabel = {waiting: 'waiting for you', review: 'to review', working: 'working'};
+
+function sessionHTML(s) {
+  const label = stateLabel[s.state];
+  return `<li class="session ${esc(s.state)}">
+    <span class="dot ${esc(s.state)}"></span>
+    <span><a class="title" href="${esc(s.url)}">${esc(s.title)}</a>${label ? `<span class="state ${esc(s.state)}">${label}</span>` : ''}</span>
+    <span class="when">${ago(s.activity)}</span>
+    ${s.detail ? `<span class="detail">${esc(s.detail)}</span>` : ''}
+  </li>`;
+}
+
+function unitHTML(u) {
+  const wt = u.worktree;
+  const chips = [];
+  if (u.pr) {
+    const open = u.pr.state === 'OPEN';
+    chips.push(`<a class="chip ${open ? 'open' : ''}" href="${esc(u.pr.url)}" target="_blank" rel="noopener">#${esc(u.pr.number)} ${open ? '' : esc(u.pr.state.toLowerCase())}</a>`);
+  }
+  if (wt) {
+    if (wt.dirty) chips.push(`<span class="chip dirty">uncommitted</span>`);
+    if (wt.ahead || wt.behind) chips.push(`<span class="chip" title="vs base branch">↑${wt.ahead} ↓${wt.behind}</span>`);
+    if (wt.commit_at) chips.push(`<span class="chip" title="${esc(wt.commit)}">commit ${ago(wt.commit_at)}</span>`);
+  } else {
+    chips.push(`<span class="chip">no worktree</span>`);
+  }
+  for (const a of u.attention || []) chips.unshift(`<span class="chip attention">${esc(a)}</span>`);
+
+  const actions = wt ? `<span class="actions">
+      <button type="button" data-open="finder" data-path="${esc(wt.path)}">Finder</button>
+      <button type="button" data-open="editor" data-path="${esc(wt.path)}">Editor</button>
+    </span>` : '';
+
+  const cls = (u.attention || []).length ? 'attention' : (u.working ? 'working' : '');
+  return `<article class="card ${cls}">
+    <div class="row">
+      <span class="branch">${esc(u.branch)}</span>
+      ${u.repo ? `<span class="repo">${esc(u.repo)}</span>` : ''}
+      ${actions}
+    </div>
+    <div class="row" style="margin-top:6px">${chips.join('')}</div>
+    ${u.sessions?.length ? `<ul class="sessions">${u.sessions.map(sessionHTML).join('')}</ul>` : ''}
+  </article>`;
+}
+
+function section(title, items, render, emptyText) {
+  if (!items.length && !emptyText) return '';
+  return `<h2>${title} <span class="count">${items.length || ''}</span></h2>` +
+    (items.length ? items.map(render).join('') : `<p class="empty">${emptyText}</p>`);
+}
+
+function render() {
+  if (!board || !board.units) return;
+  const units = board.units;
+  const attention = units.filter(u => u.attention?.length);
+  const working = units.filter(u => !u.attention?.length && u.working);
+  const rest = units.filter(u => !u.attention?.length && !u.working);
+
+  const loose = board.loose || [];
+  const looseActive = loose.filter(s => s.state !== 'idle');
+  const looseIdle = loose.filter(s => s.state === 'idle');
+  const looseCard = list => `<article class="card"><ul class="sessions" style="margin:0">${list.map(sessionHTML).join('')}</ul></article>`;
+
+  const waitingCount = attention.length + looseActive.filter(s => s.state === 'waiting' || s.state === 'review').length;
+  document.title = waitingCount ? `(${waitingCount}) devboard` : 'devboard';
+
+  boardEl.innerHTML =
+    (board.errors?.length ? `<div class="errors">${board.errors.map(esc).join('<br>')}</div>` : '') +
+    section('Waiting on you', attention, unitHTML, 'Nothing is waiting on you.') +
+    section('Claude is working', working, unitHTML) +
+    section('In progress', rest, unitHTML) +
+    (loose.length ? `<h2>Other sessions <span class="count">${loose.length}</span></h2>` +
+      (looseActive.length ? looseCard(looseActive) : '') +
+      (looseIdle.length ? `<details><summary>${looseIdle.length} idle</summary>${looseCard(looseIdle)}</details>` : '') : '');
+}
+
+async function post(path, body) {
+  const res = await fetch(path, {
+    method: 'POST',
+    headers: {'X-Devboard': '1', 'Content-Type': 'application/json'},
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok) alert(await res.text());
+}
+
+boardEl.addEventListener('click', e => {
+  const b = e.target.closest('button[data-open]');
+  if (b) post('/api/open', {path: b.dataset.path, with: b.dataset.open});
+});
+document.getElementById('refresh').addEventListener('click', () => post('/api/refresh'));
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') post('/api/refresh');
+});
+
+function connect() {
+  const es = new EventSource('/events');
+  es.addEventListener('board', e => {
+    board = JSON.parse(e.data);
+    statusEl.textContent = 'live';
+    statusEl.classList.remove('offline');
+    render();
+  });
+  es.onerror = () => {
+    statusEl.textContent = 'offline, retrying…';
+    statusEl.classList.add('offline');
+  };
+}
+connect();
+// Keep the relative times fresh between updates.
+setInterval(render, 30000);
+</script>
+</body>
+</html>
