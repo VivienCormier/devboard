@@ -23,14 +23,20 @@ type Unit struct {
 
 type Board struct {
 	Units []Unit `json:"units"`
-	// Loose are sessions tied to no branch of a tracked repository (other
-	// projects, sessions on the base branch).
-	Loose     []Session `json:"loose"`
+	// Loose are sessions tied to no live unit: other projects, sessions on
+	// the base branch, sessions on work that already landed.
+	Loose []Session `json:"loose"`
+	// GitHub is false until pull requests could be fetched once.
+	GitHub    bool      `json:"github"`
 	Errors    []string  `json:"errors,omitempty"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
-func buildBoard(sessions []Session, worktrees []Worktree, errs []string, now time.Time) Board {
+// PR state for a pull request a session record still sees open but GitHub no
+// longer lists among my open ones: merged or closed, without saying which.
+const prStateDone = "DONE"
+
+func buildBoard(sessions []Session, worktrees []Worktree, gh *GitHub, errs []string, now time.Time) Board {
 	units := map[string]*Unit{}
 	unit := func(branch string) *Unit {
 		u, ok := units[branch]
@@ -56,8 +62,39 @@ func buildBoard(sessions []Session, worktrees []Worktree, errs []string, now tim
 		u.Repo = wt.Repo
 	}
 
+	ghOpen := map[string]PR{}
+	ghDone := map[string]PR{}
+	if gh != nil {
+		for _, pr := range gh.Open {
+			ghOpen[pr.URL] = pr
+			u := unit(pr.Branch)
+			u.PR = &pr
+			u.Repo = pr.Repo
+		}
+		for _, pr := range gh.Done {
+			ghDone[pr.URL] = pr
+		}
+	}
+
 	var loose []Session
 	for _, s := range sessions {
+		// A session record keeps the state its PRs had when the session
+		// last looked; GitHub is fresher.
+		if gh != nil {
+			// The scan's sessions are shared between builds.
+			s.prs = slices.Clone(s.prs)
+			for i, pr := range s.prs {
+				switch {
+				case ghOpen[pr.URL].URL != "":
+					s.prs[i].State = "OPEN"
+				case ghDone[pr.URL].URL != "":
+					s.prs[i].State = ghDone[pr.URL].State
+				case pr.own && pr.State == "OPEN":
+					s.prs[i].State = prStateDone
+				}
+			}
+		}
+
 		branches := sessionBranches(s, worktrees, baseBranches)
 		if len(branches) == 0 {
 			loose = append(loose, s)
@@ -69,31 +106,39 @@ func buildBoard(sessions []Session, worktrees []Worktree, errs []string, now tim
 		}
 		for _, pr := range s.prs {
 			u, ok := units[pr.Branch]
-			if !ok {
+			if !ok || (u.PR != nil && (u.PR.Title != "" || u.PR.State == "OPEN")) {
 				continue
 			}
-			// Several sessions can know the same PR; keep the open state if
-			// any of them saw it open last.
-			if u.PR == nil || pr.State == "OPEN" {
-				pr := pr
-				u.PR = &pr
-			}
+			pr := pr
+			u.PR = &pr
 			if u.Repo == "" {
 				u.Repo = pr.Repo
 			}
 		}
 	}
 
-	board := Board{Loose: sortSessions(loose), Errors: errs, UpdatedAt: now}
+	// A worktree whose PR is no longer open: say it landed rather than
+	// flag it as work without a PR.
+	if gh != nil {
+		for _, pr := range gh.Done {
+			if u, ok := units[pr.Branch]; ok && u.PR == nil {
+				pr := pr
+				u.PR = &pr
+			}
+		}
+	}
+
+	board := Board{Loose: loose, GitHub: gh != nil, Errors: errs, UpdatedAt: now}
 	for _, u := range units {
 		u.Sessions = sortSessions(u.Sessions)
+		open := u.PR != nil && u.PR.State == "OPEN"
 		// A branch with no worktree and no open PR is gone or done: its idle
 		// sessions are only history.
-		if u.Worktree == nil && (u.PR == nil || u.PR.State != "OPEN") &&
-			(len(u.Sessions) == 0 || u.Sessions[0].State == StateIdle) {
+		if u.Worktree == nil && !open && (len(u.Sessions) == 0 || u.Sessions[0].State == StateIdle) {
 			board.Loose = append(board.Loose, u.Sessions...)
 			continue
 		}
+
 		if u.Worktree != nil {
 			u.Activity = u.Worktree.CommitAt
 		}
@@ -111,6 +156,14 @@ func buildBoard(sessions []Session, worktrees []Worktree, errs []string, now tim
 			}
 		}
 		u.Attention = slices.Compact(u.Attention)
+
+		if open && u.PR.Title != "" {
+			u.Attention = append(u.Attention, prAttention(*u.PR)...)
+		}
+		if gh != nil && u.PR == nil && u.Worktree != nil &&
+			(u.Worktree.Dirty || u.Worktree.Ahead > 0) && now.Sub(u.Activity) > staleWorkAfter {
+			u.Attention = append(u.Attention, "No PR yet")
+		}
 		board.Units = append(board.Units, *u)
 	}
 	board.Loose = sortSessions(board.Loose)

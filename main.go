@@ -48,8 +48,12 @@ type collector struct {
 	lastSessions []Session
 	worktrees    []Worktree
 	worktreesErr error
+	github       *GitHub
+	githubErr    error
+	githubAt     time.Time
 
 	wakeWorktrees chan struct{}
+	wakeGitHub    chan struct{}
 }
 
 func newCollector(cfg Config) *collector {
@@ -58,11 +62,13 @@ func newCollector(cfg Config) *collector {
 		hub:           newHub(),
 		sessions:      newSessionScanner(cfg.ClaudeSessionsDir, cfg.ClaudeProjectsDir, cfg.sessionMaxAge()),
 		wakeWorktrees: make(chan struct{}, 1),
+		wakeGitHub:    make(chan struct{}, 1),
 	}
 }
 
 func (c *collector) run(ctx context.Context) {
 	go c.loop(ctx, seconds(c.cfg.WorktreesRefreshSeconds), c.wakeWorktrees, c.collectWorktrees)
+	go c.loop(ctx, seconds(c.cfg.GitHubRefreshSeconds), c.wakeGitHub, c.collectGitHub)
 
 	// Sessions are cheap to rescan, so they are polled and need no wake-up.
 	c.collectSessions(ctx)
@@ -94,10 +100,39 @@ func (c *collector) loop(ctx context.Context, every time.Duration, wake <-chan s
 }
 
 func (c *collector) refreshAll() {
-	select {
-	case c.wakeWorktrees <- struct{}{}:
-	default: // a refresh is already pending
+	for _, wake := range []chan struct{}{c.wakeWorktrees, c.wakeGitHub} {
+		select {
+		case wake <- struct{}{}:
+		default: // a refresh is already pending
+		}
 	}
+}
+
+// githubMinInterval spaces out GitHub fetches triggered by the page (refresh
+// button, tab focus), which would otherwise burn rate-limit points.
+const githubMinInterval = 15 * time.Second
+
+func (c *collector) collectGitHub(ctx context.Context) {
+	c.mu.Lock()
+	recent := time.Since(c.githubAt) < githubMinInterval
+	c.mu.Unlock()
+	if recent {
+		return
+	}
+
+	gh, err := fetchGitHub(ctx, c.cfg.GitHubReviewQuery)
+	if err != nil {
+		log.Printf("github: %v", err)
+	}
+	c.mu.Lock()
+	c.githubAt = time.Now()
+	c.githubErr = err
+	// Keep the last good data through a transient failure.
+	if gh != nil {
+		c.github = gh
+	}
+	c.mu.Unlock()
+	c.publish()
 }
 
 func (c *collector) collectSessions(context.Context) {
@@ -126,7 +161,10 @@ func (c *collector) publish() {
 	if c.worktreesErr != nil {
 		errs = append(errs, "worktrees: "+c.worktreesErr.Error())
 	}
-	board := buildBoard(append([]Session(nil), c.lastSessions...), c.worktrees, errs, time.Now())
+	if c.githubErr != nil {
+		errs = append(errs, "GitHub: "+c.githubErr.Error())
+	}
+	board := buildBoard(append([]Session(nil), c.lastSessions...), c.worktrees, c.github, errs, time.Now())
 	c.mu.Unlock()
 	c.hub.publish(board)
 }

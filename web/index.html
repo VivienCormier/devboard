@@ -80,6 +80,9 @@
   .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .branch { font-family: var(--mono); font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
   .repo { color: var(--muted); font-size: 12px; }
+  .pr-title { margin-top: 4px; }
+  .pr-title a { text-decoration: none; }
+  .pr-title a:hover { text-decoration: underline; }
   .chip {
     display: inline-flex; align-items: center; gap: 4px;
     padding: 1px 8px; border-radius: 999px;
@@ -157,6 +160,12 @@ function ago(iso) {
 }
 
 const stateLabel = {waiting: 'waiting for you', review: 'to review', working: 'working'};
+const prStateLabel = {MERGED: 'merged', CLOSED: 'closed', DONE: 'merged or closed'};
+const checksLabel = {SUCCESS: 'CI ✓', PENDING: 'CI running', EXPECTED: 'CI waiting'};
+
+// A unit whose only reason is someone else's PR to review goes to its own
+// section, so review requests do not drown what is yours.
+const onlyReview = u => u.pr?.review_requested && u.attention?.length === 1;
 
 function sessionHTML(s) {
   const label = stateLabel[s.state];
@@ -171,15 +180,21 @@ function sessionHTML(s) {
 function unitHTML(u) {
   const wt = u.worktree;
   const chips = [];
-  if (u.pr) {
-    const open = u.pr.state === 'OPEN';
-    chips.push(`<a class="chip ${open ? 'open' : ''}" href="${esc(u.pr.url)}" target="_blank" rel="noopener">#${esc(u.pr.number)} ${open ? '' : esc(u.pr.state.toLowerCase())}</a>`);
+  const pr = u.pr;
+  if (pr) {
+    const open = pr.state === 'OPEN';
+    const state = open ? (pr.draft ? 'draft' : '') : (prStateLabel[pr.state] || pr.state.toLowerCase());
+    chips.push(`<a class="chip ${open && !pr.draft ? 'open' : ''}" href="${esc(pr.url)}" target="_blank" rel="noopener">#${esc(pr.number)} ${esc(state)}</a>`);
+    if (open && pr.review_decision === 'APPROVED') chips.push(`<span class="chip open">approved</span>`);
+    // A failing CI is already among the attention reasons.
+    if (open && pr.checks && pr.checks !== 'FAILURE' && pr.checks !== 'ERROR') chips.push(`<span class="chip">${checksLabel[pr.checks] || esc(pr.checks.toLowerCase())}</span>`);
+    if (pr.review_requested && pr.author) chips.push(`<span class="chip">by ${esc(pr.author)}</span>`);
   }
   if (wt) {
     if (wt.dirty) chips.push(`<span class="chip dirty">uncommitted</span>`);
     if (wt.ahead || wt.behind) chips.push(`<span class="chip" title="vs base branch">↑${wt.ahead} ↓${wt.behind}</span>`);
     if (wt.commit_at) chips.push(`<span class="chip" title="${esc(wt.commit)}">commit ${ago(wt.commit_at)}</span>`);
-  } else {
+  } else if (!pr?.review_requested) {
     chips.push(`<span class="chip">no worktree</span>`);
   }
   for (const a of u.attention || []) chips.unshift(`<span class="chip attention">${esc(a)}</span>`);
@@ -196,6 +211,7 @@ function unitHTML(u) {
       ${u.repo ? `<span class="repo">${esc(u.repo)}</span>` : ''}
       ${actions}
     </div>
+    ${pr?.title ? `<div class="pr-title"><a href="${esc(pr.url)}" target="_blank" rel="noopener">${esc(pr.title)}</a></div>` : ''}
     <div class="row" style="margin-top:6px">${chips.join('')}</div>
     ${u.sessions?.length ? `<ul class="sessions">${u.sessions.map(sessionHTML).join('')}</ul>` : ''}
   </article>`;
@@ -210,7 +226,8 @@ function section(title, items, render, emptyText) {
 function render() {
   if (!board || !board.units) return;
   const units = board.units;
-  const attention = units.filter(u => u.attention?.length);
+  const attention = units.filter(u => u.attention?.length && !onlyReview(u));
+  const reviews = units.filter(onlyReview);
   const working = units.filter(u => !u.attention?.length && u.working);
   const rest = units.filter(u => !u.attention?.length && !u.working);
 
@@ -225,6 +242,7 @@ function render() {
   boardEl.innerHTML =
     (board.errors?.length ? `<div class="errors">${board.errors.map(esc).join('<br>')}</div>` : '') +
     section('Waiting on you', attention, unitHTML, 'Nothing is waiting on you.') +
+    section('Reviews requested', reviews, unitHTML) +
     section('Claude is working', working, unitHTML) +
     section('In progress', rest, unitHTML) +
     (loose.length ? `<h2>Other sessions <span class="count">${loose.length}</span></h2>` +

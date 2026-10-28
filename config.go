@@ -32,9 +32,15 @@ type Config struct {
 	// EditorCommand opens a worktree in an editor; the path is appended.
 	EditorCommand []string `json:"editor_command"`
 
+	// GitHubReviewQuery is the search for pull requests waiting on my
+	// review. review-requested also matches requests to my teams; use
+	// user-review-requested:@me to keep only those addressed to me.
+	GitHubReviewQuery string `json:"github_review_query"`
+
 	// Refresh intervals, in seconds.
 	SessionsRefreshSeconds  int64 `json:"sessions_refresh_seconds"`
 	WorktreesRefreshSeconds int64 `json:"worktrees_refresh_seconds"`
+	GitHubRefreshSeconds    int64 `json:"github_refresh_seconds"`
 }
 
 type RepoConfig struct {
@@ -60,8 +66,10 @@ func loadConfig(path string) (Config, error) {
 		ClaudeProjectsDir:       filepath.Join(home, ".claude", "projects"),
 		SessionMaxAgeDays:       14,
 		EditorCommand:           []string{"code"},
+		GitHubReviewQuery:       "is:pr is:open review-requested:@me archived:false",
 		SessionsRefreshSeconds:  3,
 		WorktreesRefreshSeconds: 30,
+		GitHubRefreshSeconds:    90,
 	}
 
 	data, err := os.ReadFile(path)

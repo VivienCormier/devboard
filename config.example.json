@@ -7,5 +7,7 @@
   "session_max_age_days": 14,
   "editor_command": ["code"],
   "sessions_refresh_seconds": 3,
-  "worktrees_refresh_seconds": 30
+  "worktrees_refresh_seconds": 30,
+  "github_refresh_seconds": 90,
+  "github_review_query": "is:pr is:open review-requested:@me archived:false"
 }

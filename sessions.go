@@ -75,6 +75,20 @@ type PR struct {
 	URL    string `json:"url"`
 	State  string `json:"state"`
 	Branch string `json:"-"`
+
+	// Known from GitHub only; a PR known from a session record has none.
+	Title             string `json:"title,omitempty"`
+	Author            string `json:"author,omitempty"`
+	Draft             bool   `json:"draft,omitempty"`
+	ReviewDecision    string `json:"review_decision,omitempty"`
+	Mergeable         string `json:"mergeable,omitempty"`
+	Checks            string `json:"checks,omitempty"`
+	UnresolvedThreads int64  `json:"unresolved_threads,omitempty"`
+	Mine              bool   `json:"mine,omitempty"`
+	ReviewRequested   bool   `json:"review_requested,omitempty"`
+
+	// own is the session record's flag for a PR its user authored.
+	own bool
 }
 
 // workingWindow bounds how long a turn with no news is still shown as
@@ -125,7 +139,7 @@ func (d desktopSession) toSession(now time.Time) Session {
 	}
 
 	for _, pr := range d.PRs {
-		s.prs = append(s.prs, PR{Number: pr.Number, Repo: pr.Repo, URL: pr.URL, State: pr.State, Branch: pr.Branch})
+		s.prs = append(s.prs, PR{Number: pr.Number, Repo: pr.Repo, URL: pr.URL, State: pr.State, Branch: pr.Branch, own: pr.Own})
 	}
 	for _, wb := range d.WrittenBranches {
 		if _, branch, ok := strings.Cut(wb, "\x00"); ok && branch != "" {
