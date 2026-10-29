@@ -89,6 +89,9 @@ func loadConfig(path string) (Config, error) {
 	if cfg.Notion.DatabaseID != "" && (cfg.Notion.UserID == "" || cfg.Notion.AssigneeProperty == "") {
 		return cfg, fmt.Errorf("%s: notion needs user_id and assignee_property", path)
 	}
+	if cfg.Notion.ClientID != "" && len(cfg.Notion.ClientSecretCommand) == 0 {
+		return cfg, fmt.Errorf("%s: notion.client_id needs client_secret_command", path)
+	}
 
 	cfg.ClaudeSessionsDir = expandHome(cfg.ClaudeSessionsDir, home)
 	cfg.ClaudeProjectsDir = expandHome(cfg.ClaudeProjectsDir, home)

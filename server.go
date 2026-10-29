@@ -76,6 +76,8 @@ type server struct {
 	hub     *hub
 	refresh func(context.Context) Board
 	paths   func() map[string]bool
+	// notion is nil unless Notion is reached through OAuth.
+	notion *notionOAuth
 }
 
 func (s *server) routes() http.Handler {
@@ -85,6 +87,10 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("GET /events", s.events)
 	mux.HandleFunc("POST /api/refresh", s.guard(s.handleRefresh))
 	mux.HandleFunc("POST /api/open", s.guard(s.open))
+	if s.notion != nil {
+		mux.HandleFunc("GET /notion/connect", s.notionConnect)
+		mux.HandleFunc("GET /notion/callback", s.notionCallback)
+	}
 	return s.localOnly(mux)
 }
 

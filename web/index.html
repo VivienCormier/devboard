@@ -57,6 +57,7 @@
   header .spacer { flex: 1; }
   header .status { color: var(--muted); font-size: 12px; }
   header .status.offline { color: var(--accent); }
+  .errors .connect { margin-left: 8px; font-weight: 600; color: var(--accent); }
   #refresh.pending { border-color: var(--accent); color: var(--accent); font-weight: 600; }
   main { max-width: 1100px; margin: 0 auto; padding: 16px 24px 48px; }
   h2 {
@@ -314,7 +315,8 @@ function render() {
   const backlog = tickets.filter(t => t.backlog);
 
   boardEl.innerHTML =
-    (board.errors?.length ? `<div class="errors">${board.errors.map(esc).join('<br>')}</div>` : '') +
+    (board.errors?.length ? `<div class="errors">${board.errors.map(esc).join('<br>')}` +
+      (board.notion_connect ? ` <a class="connect" href="/notion/connect">Connect Notion</a>` : '') + `</div>` : '') +
     section('Waiting on you', [...attention, ...ticketsAttention], x => x.branch !== undefined ? unitHTML(x) : ticketHTML(x), 'Nothing is waiting on you.') +
     section('Reviews requested', reviews, unitHTML) +
     section('Claude is working', working, unitHTML) +

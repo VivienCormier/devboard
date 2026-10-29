@@ -73,13 +73,28 @@ The config lives in `~/.config/devboard/config.json`, outside the repository, si
 
 ### Notion
 
-1. Create an internal integration at https://www.notion.so/profile/integrations with the "Read content" capability only.
+devboard reads Notion through a connection created at https://www.notion.so/profile/integrations, of either kind.
+
+**API token** (internal connection), if your workspace lets you create one:
+
+1. Create it with the "Read content" capability only.
 2. Share the tickets database with it: on the database, **⋯ → Connections**.
-3. Store its token in the Keychain, which prompts for it:
+3. Store its token in the Keychain, which prompts for it, and set `token_command` as in the example:
 
    ```bash
    security add-generic-password -a "$USER" -s devboard-notion -w
    ```
+
+**OAuth**, when only workspace owners may create API tokens. The token acts as you, limited to the pages you pick when connecting:
+
+1. Create it with the redirect URI `http://127.0.0.1:7777/notion/callback` (match `addr` if you changed it).
+2. Put its client ID in `client_id`, and store its client secret in the Keychain, read by `client_secret_command`:
+
+   ```bash
+   security add-generic-password -a "$USER" -s devboard-notion-client -w
+   ```
+
+3. Click **Connect Notion** on the page and pick the tickets database. The tokens are kept in `notion-oauth.json` next to the config, readable by you only, and refreshed when they expire.
 
 | Key under `notion` | |
 |---|---|
@@ -88,13 +103,15 @@ The config lives in `~/.config/devboard/config.json`, outside the repository, si
 | `assignee_property` | the people property holding who a ticket is assigned to |
 | `status_property` | defaults to the database's status property |
 | `priority_property` | optional select property; its options rank tickets, first is most urgent |
-| `token_command` | prints the token; without it, `NOTION_TOKEN` is read |
+| `token_command` | prints an API token; without it, `NOTION_TOKEN` is read |
+| `client_id` | an OAuth connection's client ID; turns OAuth on |
+| `client_secret_command` | prints the OAuth client secret |
 | `open_in_app` | opens tickets in the Notion desktop app instead of the browser |
 | `refresh_seconds` | above 0, also polls Notion in the background; default `0` |
 
 ## Security
 
-The server only answers on the loopback interface and rejects any other `Host` header, which blocks DNS rebinding. Actions (refresh, open a folder) require an `X-Devboard` header, which a cross-site page cannot send. Folders can be opened only if they are a known worktree.
+The server only answers on the loopback interface and rejects any other `Host` header, which blocks DNS rebinding. Actions (refresh, open a folder) require an `X-Devboard` header, which a cross-site page cannot send. Folders can be opened only if they are a known worktree. A Notion sign-in is accepted only if it was started from the page.
 
 ## Roadmap
 

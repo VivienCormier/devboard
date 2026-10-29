@@ -31,10 +31,13 @@ type Board struct {
 	// worked on without a branch that names them.
 	Tickets []Ticket `json:"tickets"`
 	// GitHub and Notion are false until they could be fetched once.
-	GitHub    bool      `json:"github"`
-	Notion    bool      `json:"notion"`
-	Errors    []string  `json:"errors,omitempty"`
-	UpdatedAt time.Time `json:"updated_at"`
+	GitHub bool `json:"github"`
+	Notion bool `json:"notion"`
+	// NotionConnect asks for a Notion sign-in: OAuth is set up and there
+	// is no usable token.
+	NotionConnect bool      `json:"notion_connect,omitempty"`
+	Errors        []string  `json:"errors,omitempty"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 // PR state for a pull request a session record still sees open but GitHub no

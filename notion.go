@@ -18,8 +18,8 @@ import (
 	"time"
 )
 
-// Notion tickets come from one database, read through the public API with an
-// internal integration token. 2022-06-28 is the last API version whose
+// Notion tickets come from one database, read through the public API with
+// either an internal integration token or an OAuth connection. 2022-06-28 is the last API version whose
 // database endpoints serve a database with a single data source directly.
 const (
 	notionAPI     = "https://api.notion.com/v1"
@@ -39,14 +39,22 @@ type NotionConfig struct {
 	// PriorityProperty is an optional select property; its options are
 	// ranked in the order the database lists them, most urgent first.
 	PriorityProperty string `json:"priority_property"`
-	// TokenCommand prints the integration token, e.g. a Keychain lookup.
-	// Without it the token is read from NOTION_TOKEN.
+	// TokenCommand prints an internal integration token, e.g. a Keychain
+	// lookup. Without it the token is read from NOTION_TOKEN.
 	TokenCommand []string `json:"token_command"`
+	// ClientID turns on OAuth, for a workspace where members cannot create
+	// internal integrations; ClientSecretCommand prints its secret.
+	ClientID            string   `json:"client_id"`
+	ClientSecretCommand []string `json:"client_secret_command"`
 	// OpenInApp opens tickets in the Notion desktop app instead of the
 	// browser.
 	OpenInApp bool `json:"open_in_app"`
 	// RefreshSeconds polls Notion; 0 fetches only on a refresh.
 	RefreshSeconds int64 `json:"refresh_seconds"`
+
+	// Set from the rest of the config.
+	redirectURI string
+	tokenPath   string
 }
 
 func (c NotionConfig) enabled() bool { return c.DatabaseID != "" && c.UserID != "" }
@@ -78,7 +86,9 @@ type Ticket struct {
 }
 
 type notionClient struct {
-	base   string
+	base string
+	// oauth is nil when an internal integration token is used.
+	oauth  *notionOAuth
 	cfg    NotionConfig
 	client *http.Client
 	token  string
@@ -105,12 +115,23 @@ type notionSchema struct {
 }
 
 func newNotionClient(cfg NotionConfig) *notionClient {
-	return &notionClient{
+	n := &notionClient{
 		base:   notionAPI,
 		cfg:    cfg,
 		client: &http.Client{Timeout: 30 * time.Second},
 		bodies: map[string]cachedBody{},
 	}
+	if cfg.ClientID != "" {
+		n.oauth = &notionOAuth{
+			base:          notionAPI,
+			client:        n.client,
+			clientID:      cfg.ClientID,
+			secretCommand: cfg.ClientSecretCommand,
+			redirectURI:   cfg.redirectURI,
+			tokenPath:     cfg.tokenPath,
+		}
+	}
+	return n
 }
 
 var errNotionAuth = errors.New("the token was refused")
@@ -119,6 +140,11 @@ func (n *notionClient) loadToken(ctx context.Context) error {
 	if n.token != "" {
 		return nil
 	}
+	if n.oauth != nil {
+		t, err := n.oauth.load()
+		n.token = t.AccessToken
+		return err
+	}
 	if len(n.cfg.TokenCommand) == 0 {
 		n.token = os.Getenv("NOTION_TOKEN")
 		if n.token == "" {
@@ -126,18 +152,45 @@ func (n *notionClient) loadToken(ctx context.Context) error {
 		}
 		return nil
 	}
-	out, err := exec.CommandContext(ctx, n.cfg.TokenCommand[0], n.cfg.TokenCommand[1:]...).Output()
-	if exitErr, ok := err.(*exec.ExitError); ok && len(exitErr.Stderr) > 0 {
-		return fmt.Errorf("token_command: %s", bytes.TrimSpace(exitErr.Stderr))
-	}
+	token, err := runCommand(ctx, n.cfg.TokenCommand)
 	if err != nil {
 		return fmt.Errorf("token_command: %w", err)
 	}
-	n.token = strings.TrimSpace(string(out))
+	n.token = token
 	return nil
 }
 
+// runCommand returns what a command prints, trimmed; on failure, what it
+// printed on stderr says why.
+func runCommand(ctx context.Context, argv []string) (string, error) {
+	if len(argv) == 0 {
+		return "", errors.New("no command configured")
+	}
+	out, err := exec.CommandContext(ctx, argv[0], argv[1:]...).Output()
+	if exitErr, ok := err.(*exec.ExitError); ok && len(exitErr.Stderr) > 0 {
+		return "", errors.New(string(bytes.TrimSpace(exitErr.Stderr)))
+	}
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// call sends one API request. With OAuth, a refused token is refreshed and
+// the request sent once more.
 func (n *notionClient) call(ctx context.Context, method, path string, body any, out any) error {
+	err := n.callOnce(ctx, method, path, body, out)
+	if !errors.Is(err, errNotionAuth) || n.oauth == nil {
+		return err
+	}
+	if err := n.oauth.refresh(ctx, n.token); err != nil {
+		return err
+	}
+	n.token = ""
+	return n.callOnce(ctx, method, path, body, out)
+}
+
+func (n *notionClient) callOnce(ctx context.Context, method, path string, body any, out any) error {
 	if err := n.loadToken(ctx); err != nil {
 		return err
 	}
@@ -167,7 +220,11 @@ func (n *notionClient) call(ctx context.Context, method, path string, body any, 
 	}
 	if resp.StatusCode == http.StatusUnauthorized {
 		// The token may have been rotated: read it again next time.
+		stale := n.token
 		n.token = ""
+		if n.oauth != nil {
+			n.token = stale // refresh compares it with the stored one
+		}
 		return errNotionAuth
 	}
 	if resp.StatusCode != http.StatusOK {

@@ -4,10 +4,12 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
@@ -21,6 +23,8 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	cfg.Notion.redirectURI = "http://" + cfg.Addr + "/notion/callback"
+	cfg.Notion.tokenPath = filepath.Join(filepath.Dir(*configPath), "notion-oauth.json")
 	if len(cfg.Repos) == 0 {
 		log.Printf("no repos in %s: worktrees are not tracked", *configPath)
 	}
@@ -32,6 +36,9 @@ func main() {
 	go c.run(ctx)
 
 	srv := &server{cfg: cfg, hub: c.hub, refresh: c.refresh, paths: c.worktreePaths}
+	if c.notion != nil {
+		srv.notion = c.notion.oauth
+	}
 	if err := serve(ctx, cfg.Addr, srv.routes()); err != nil {
 		log.Fatal(err)
 	}
@@ -179,11 +186,13 @@ func (c *collector) collectTickets(ctx context.Context) {
 		log.Printf("notion: %v", err)
 	}
 	c.mu.Lock()
-	c.ticketsAt = time.Now()
 	c.ticketsErr = err
 	// Keep the last good tickets through a transient failure.
 	// A non-nil slice tells the board Notion answered, even with no tickets.
+	// A failure is not throttled: once fixed (connected, token stored), the
+	// next refresh tries again.
 	if err == nil {
+		c.ticketsAt = time.Now()
 		if tickets == nil {
 			tickets = []Ticket{}
 		}
@@ -228,6 +237,8 @@ func (c *collector) publish() Board {
 		errs = append(errs, "Notion: "+c.ticketsErr.Error())
 	}
 	board := buildBoard(append([]Session(nil), c.lastSessions...), c.worktrees, c.github, c.tickets, errs, time.Now())
+	board.NotionConnect = c.notion != nil && c.notion.oauth != nil &&
+		(errors.Is(c.ticketsErr, errNotionNotConnected) || errors.Is(c.ticketsErr, errNotionAuth))
 	c.mu.Unlock()
 	c.hub.publish(board)
 	return board
