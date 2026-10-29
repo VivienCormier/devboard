@@ -159,6 +159,21 @@ func buildBoard(sessions []Session, worktrees []Worktree, gh *GitHub, tickets []
 			}
 		}
 	}
+	// A ticket with several PRs is still being worked on while one of them
+	// is open, even if another one merged.
+	stillOpen := map[string]bool{}
+	for _, t := range tickets {
+		if slices.ContainsFunc(t.PRs, func(pr PR) bool { return pr.State == "OPEN" }) {
+			stillOpen[t.URL] = true
+		}
+	}
+	for _, u := range units {
+		if u.PR != nil && u.PR.State == "OPEN" {
+			for _, t := range u.Tickets {
+				stillOpen[t.URL] = true
+			}
+		}
+	}
 	for i, t := range tickets {
 		if matched[i] {
 			continue
@@ -208,7 +223,7 @@ func buildBoard(sessions []Session, worktrees []Worktree, gh *GitHub, tickets []
 		}
 		if u.PR != nil && (u.PR.State == "MERGED" || u.PR.State == prStateDone) {
 			for _, t := range u.Tickets {
-				if inProgress(t) {
+				if inProgress(t) && !stillOpen[t.URL] {
 					u.Attention = append(u.Attention, cmp.Or(t.ID, "Ticket")+" still "+t.Status)
 				}
 			}

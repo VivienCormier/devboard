@@ -169,3 +169,25 @@ func TestBoardTickets(t *testing.T) {
 		t.Errorf("linked PR state = %q, want MERGED", got)
 	}
 }
+
+func TestBoardTicketStillOpen(t *testing.T) {
+	worktrees := []Worktree{{Repo: "acme/app", Branch: "feat/first", Path: "/w/1"}, {Repo: "acme/app", Branch: "feat/second", Path: "/w/2"}}
+	gh := &GitHub{
+		Open: []PR{{Number: 2, URL: "https://github.com/acme/app/pull/2", Branch: "feat/second", State: "OPEN", Title: "Second (UL-7)"}},
+		Done: []PR{{Number: 1, URL: "https://github.com/acme/app/pull/1", Branch: "feat/first", State: "MERGED", Title: "First (UL-7)"}},
+	}
+	ticket := Ticket{ID: "UL-7", URL: "https://notion.so/7", Group: TicketDoing, Status: "In dev"}
+
+	b := buildBoard(nil, worktrees, gh, []Ticket{ticket}, nil, time.Now())
+	for _, u := range b.Units {
+		if slices.Contains(u.Attention, "UL-7 still In dev") {
+			t.Errorf("%s: a ticket with an open PR is flagged", u.Branch)
+		}
+	}
+
+	gh.Open = nil
+	b = buildBoard(nil, worktrees[:1], gh, []Ticket{ticket}, nil, time.Now())
+	if got := b.Units[0].Attention; !slices.Equal(got, []string{"UL-7 still In dev"}) {
+		t.Errorf("all PRs merged: attention = %q", got)
+	}
+}
