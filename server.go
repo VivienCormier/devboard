@@ -18,7 +18,8 @@ import (
 //go:embed web
 var webFS embed.FS
 
-// hub keeps the latest board and pushes it to every open page.
+// hub keeps the latest board and pushes it to every open page, which shows
+// it only on a refresh but uses it to tell that something changed.
 type hub struct {
 	mu      sync.Mutex
 	board   []byte
@@ -73,7 +74,7 @@ func (h *hub) subscribe() (chan []byte, []byte, func()) {
 type server struct {
 	cfg     Config
 	hub     *hub
-	refresh func()
+	refresh func(context.Context) Board
 	paths   func() map[string]bool
 }
 
@@ -148,9 +149,14 @@ func (s *server) events(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// handleRefresh fetches every source and answers with the board. Leaving
+// the page does not cancel the fetch: its result is still worth keeping.
 func (s *server) handleRefresh(w http.ResponseWriter, r *http.Request) {
-	s.refresh()
-	w.WriteHeader(http.StatusNoContent)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), time.Minute)
+	defer cancel()
+	board := s.refresh(ctx)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(board)
 }
 
 // open shows a worktree in Finder or the editor. Only paths of known

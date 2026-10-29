@@ -31,18 +31,25 @@ func main() {
 	c := newCollector(cfg)
 	go c.run(ctx)
 
-	srv := &server{cfg: cfg, hub: c.hub, refresh: c.refreshAll, paths: c.worktreePaths}
+	srv := &server{cfg: cfg, hub: c.hub, refresh: c.refresh, paths: c.worktreePaths}
 	if err := serve(ctx, cfg.Addr, srv.routes()); err != nil {
 		log.Fatal(err)
 	}
 }
 
-// collector refreshes each source at its own pace and republishes the board
-// whenever one of them changes.
+// collector fetches the sources when the page asks for a refresh, and keeps
+// rescanning the local session records so the page can tell that something
+// changed. GitHub, Notion and the worktrees are also polled when the config
+// sets an interval for them.
 type collector struct {
 	cfg      Config
 	hub      *hub
 	sessions *sessionScanner
+	notion   *notionClient
+
+	// Each source is fetched by one caller at a time: a refresh arriving
+	// during a fetch waits for it, then finds it recent enough.
+	scanMu, githubMu, notionMu sync.Mutex
 
 	mu           sync.Mutex
 	lastSessions []Session
@@ -54,22 +61,13 @@ type collector struct {
 	tickets      []Ticket
 	ticketsErr   error
 	ticketsAt    time.Time
-
-	notion *notionClient
-
-	wakeWorktrees chan struct{}
-	wakeGitHub    chan struct{}
-	wakeNotion    chan struct{}
 }
 
 func newCollector(cfg Config) *collector {
 	c := &collector{
-		cfg:           cfg,
-		hub:           newHub(),
-		sessions:      newSessionScanner(cfg.ClaudeSessionsDir, cfg.ClaudeProjectsDir, cfg.sessionMaxAge()),
-		wakeWorktrees: make(chan struct{}, 1),
-		wakeGitHub:    make(chan struct{}, 1),
-		wakeNotion:    make(chan struct{}, 1),
+		cfg:      cfg,
+		hub:      newHub(),
+		sessions: newSessionScanner(cfg.ClaudeSessionsDir, cfg.ClaudeProjectsDir, cfg.sessionMaxAge()),
 	}
 	if cfg.Notion.enabled() {
 		c.notion = newNotionClient(cfg.Notion)
@@ -78,13 +76,13 @@ func newCollector(cfg Config) *collector {
 }
 
 func (c *collector) run(ctx context.Context) {
-	go c.loop(ctx, seconds(c.cfg.WorktreesRefreshSeconds), c.wakeWorktrees, c.collectWorktrees)
-	go c.loop(ctx, seconds(c.cfg.GitHubRefreshSeconds), c.wakeGitHub, c.collectGitHub)
+	go c.every(ctx, c.cfg.WorktreesRefreshSeconds, c.collectWorktrees)
+	go c.every(ctx, c.cfg.GitHubRefreshSeconds, c.collectGitHub)
 	if c.notion != nil {
-		go c.loop(ctx, seconds(c.cfg.Notion.RefreshSeconds), c.wakeNotion, c.collectTickets)
+		go c.every(ctx, c.cfg.Notion.RefreshSeconds, c.collectTickets)
 	}
 
-	// Sessions are cheap to rescan, so they are polled and need no wake-up.
+	// Session records are local files, cheap to rescan: they are polled.
 	c.collectSessions(ctx)
 	ticker := time.NewTicker(seconds(c.cfg.SessionsRefreshSeconds))
 	defer ticker.Stop()
@@ -98,35 +96,50 @@ func (c *collector) run(ctx context.Context) {
 	}
 }
 
-func (c *collector) loop(ctx context.Context, every time.Duration, wake <-chan struct{}, collect func(context.Context)) {
+// every collects once, then every n seconds. With n = 0 the source is
+// fetched again only when the page asks for a refresh.
+func (c *collector) every(ctx context.Context, n int64, collect func(context.Context)) {
 	collect(ctx)
-	ticker := time.NewTicker(every)
+	if n <= 0 {
+		return
+	}
+	ticker := time.NewTicker(seconds(n))
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-		case <-wake:
-		}
-		collect(ctx)
-	}
-}
-
-func (c *collector) refreshAll() {
-	for _, wake := range []chan struct{}{c.wakeWorktrees, c.wakeGitHub, c.wakeNotion} {
-		select {
-		case wake <- struct{}{}:
-		default: // a refresh is already pending
+			collect(ctx)
 		}
 	}
 }
 
-// minFetchInterval spaces out GitHub and Notion fetches triggered by the
-// page (refresh button, tab focus), which would otherwise burn rate limits.
+// refresh fetches every source and returns the resulting board.
+func (c *collector) refresh(ctx context.Context) Board {
+	collects := []func(context.Context){c.collectWorktrees, c.collectGitHub, c.collectSessions}
+	if c.notion != nil {
+		collects = append(collects, c.collectTickets)
+	}
+	var wg sync.WaitGroup
+	for _, collect := range collects {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			collect(ctx)
+		}()
+	}
+	wg.Wait()
+	return c.publish()
+}
+
+// minFetchInterval spaces out GitHub and Notion fetches, which would
+// otherwise burn rate limits on repeated clicks.
 const minFetchInterval = 15 * time.Second
 
 func (c *collector) collectGitHub(ctx context.Context) {
+	c.githubMu.Lock()
+	defer c.githubMu.Unlock()
 	c.mu.Lock()
 	recent := time.Since(c.githubAt) < minFetchInterval
 	c.mu.Unlock()
@@ -149,9 +162,11 @@ func (c *collector) collectGitHub(ctx context.Context) {
 	c.publish()
 }
 
-// collectTickets runs on its own goroutine, the only one using the Notion
-// client.
+// collectTickets holds notionMu: the Notion client caches are not safe for
+// concurrent use.
 func (c *collector) collectTickets(ctx context.Context) {
+	c.notionMu.Lock()
+	defer c.notionMu.Unlock()
 	c.mu.Lock()
 	recent := time.Since(c.ticketsAt) < minFetchInterval
 	c.mu.Unlock()
@@ -179,7 +194,9 @@ func (c *collector) collectTickets(ctx context.Context) {
 }
 
 func (c *collector) collectSessions(context.Context) {
+	c.scanMu.Lock()
 	sessions := c.sessions.scan(time.Now())
+	c.scanMu.Unlock()
 	c.mu.Lock()
 	c.lastSessions = sessions
 	c.mu.Unlock()
@@ -198,7 +215,7 @@ func (c *collector) collectWorktrees(ctx context.Context) {
 	c.publish()
 }
 
-func (c *collector) publish() {
+func (c *collector) publish() Board {
 	c.mu.Lock()
 	var errs []string
 	if c.worktreesErr != nil {
@@ -213,6 +230,7 @@ func (c *collector) publish() {
 	board := buildBoard(append([]Session(nil), c.lastSessions...), c.worktrees, c.github, c.tickets, errs, time.Now())
 	c.mu.Unlock()
 	c.hub.publish(board)
+	return board
 }
 
 func (c *collector) worktreePaths() map[string]bool {

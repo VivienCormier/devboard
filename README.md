@@ -20,19 +20,19 @@ One click opens a session in the Claude desktop app, a pull request on GitHub, a
 
 devboard is a single Go binary with no dependencies. It reads local files, never writes them, and asks GitHub through the `gh` CLI:
 
-| Source | What is read | Refresh |
+| Source | What is read | Fetched |
 |---|---|---|
 | Claude desktop app | `~/Library/Application Support/Claude/claude-code-sessions/**/local_*.json`: title, state, linked pull requests, branches written | every 3 s, only changed files |
 | Claude Code transcripts | the end of `~/.claude/projects/*/<session>.jsonl`: the last `gitBranch`, and the tool calls still waiting for their result | with the session, only changed files |
-| Git worktrees | `wt list --format=json` ([worktrunk](https://worktrunk.dev)), falling back to `git worktree list` | every 30 s |
-| GitHub | one GraphQL query through `gh api graphql`: your open and recently closed pull requests, and those waiting on your review | every 90 s |
-| Notion | the tickets database through the API: tickets assigned to you that are not complete, and the pull requests linked from the page of those in progress | every 120 s, pages only when edited |
+| Git worktrees | `wt list --format=json` ([worktrunk](https://worktrunk.dev)), falling back to `git worktree list` | on refresh |
+| GitHub | one GraphQL query through `gh api graphql`: your open and recently closed pull requests, and those waiting on your review | on refresh |
+| Notion | the tickets database through the API: tickets assigned to you that are not complete, and the pull requests linked from the page of those in progress | on refresh, pages only when edited |
 
-The GitHub query costs about 10 rate-limit points out of the 5,000 an hour GitHub allows, so the default refresh uses under a tenth of it. A refresh from the page (button, tab focus) hits GitHub and Notion at most every 15 s.
+The page changes only when you click Refresh or reload it, so cards never move while you read them. A refresh fetches every source and shows the result. GitHub and Notion are fetched at most every 15 s, however often you click. The GitHub query costs about 10 rate-limit points out of the 5,000 an hour GitHub allows.
+
+Between refreshes, devboard keeps rescanning the local session records, which costs nothing. When something that needs you changes, the Refresh button says so and the tab title's count follows, without touching the cards.
 
 A pull request known from GitHub wins over what a session record remembers: a session keeps the state its pull requests had when it last looked.
-
-The page receives updates through server-sent events, so it stays live without reloading. It also refreshes when the tab gets the focus again.
 
 A question or a permission prompt stops a turn without ending it, so the session record still describes a running turn. The transcript shows what it waits on:
 
@@ -66,8 +66,8 @@ The config lives in `~/.config/devboard/config.json`, outside the repository, si
 | `session_max_age_days` | `14` | hides sessions inactive for longer |
 | `editor_command` | `["code"]` | command that opens a worktree; the path is appended |
 | `sessions_refresh_seconds` | `3` | |
-| `worktrees_refresh_seconds` | `30` | |
-| `github_refresh_seconds` | `90` | |
+| `worktrees_refresh_seconds` | `0` | above 0, also polls the worktrees in the background |
+| `github_refresh_seconds` | `0` | above 0, also polls GitHub in the background |
 | `notion` | none | the tickets database, see below |
 | `github_review_query` | `is:pr is:open review-requested:@me archived:false` | search for pull requests waiting on your review; `user-review-requested:@me` drops requests made to your teams |
 
@@ -90,7 +90,7 @@ The config lives in `~/.config/devboard/config.json`, outside the repository, si
 | `priority_property` | optional select property; its options rank tickets, first is most urgent |
 | `token_command` | prints the token; without it, `NOTION_TOKEN` is read |
 | `open_in_app` | opens tickets in the Notion desktop app instead of the browser |
-| `refresh_seconds` | default `120` |
+| `refresh_seconds` | above 0, also polls Notion in the background; default `0` |
 
 ## Security
 

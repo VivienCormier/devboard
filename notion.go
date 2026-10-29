@@ -44,7 +44,8 @@ type NotionConfig struct {
 	TokenCommand []string `json:"token_command"`
 	// OpenInApp opens tickets in the Notion desktop app instead of the
 	// browser.
-	OpenInApp      bool  `json:"open_in_app"`
+	OpenInApp bool `json:"open_in_app"`
+	// RefreshSeconds polls Notion; 0 fetches only on a refresh.
 	RefreshSeconds int64 `json:"refresh_seconds"`
 }
 

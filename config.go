@@ -40,7 +40,9 @@ type Config struct {
 	// Notion is the tickets database; tickets are not tracked without it.
 	Notion NotionConfig `json:"notion"`
 
-	// Refresh intervals, in seconds.
+	// Refresh intervals, in seconds. Sessions are local files, polled to
+	// tell the page that something changed. The other sources are fetched
+	// on a refresh from the page, and also polled when set above 0.
 	SessionsRefreshSeconds  int64 `json:"sessions_refresh_seconds"`
 	WorktreesRefreshSeconds int64 `json:"worktrees_refresh_seconds"`
 	GitHubRefreshSeconds    int64 `json:"github_refresh_seconds"`
@@ -64,16 +66,13 @@ func defaultConfigPath() string {
 func loadConfig(path string) (Config, error) {
 	home, _ := os.UserHomeDir()
 	cfg := Config{
-		Addr:                    "127.0.0.1:7777",
-		ClaudeSessionsDir:       filepath.Join(home, "Library", "Application Support", "Claude", "claude-code-sessions"),
-		ClaudeProjectsDir:       filepath.Join(home, ".claude", "projects"),
-		SessionMaxAgeDays:       14,
-		EditorCommand:           []string{"code"},
-		GitHubReviewQuery:       "is:pr is:open review-requested:@me archived:false",
-		SessionsRefreshSeconds:  3,
-		WorktreesRefreshSeconds: 30,
-		GitHubRefreshSeconds:    90,
-		Notion:                  NotionConfig{RefreshSeconds: 120},
+		Addr:                   "127.0.0.1:7777",
+		ClaudeSessionsDir:      filepath.Join(home, "Library", "Application Support", "Claude", "claude-code-sessions"),
+		ClaudeProjectsDir:      filepath.Join(home, ".claude", "projects"),
+		SessionMaxAgeDays:      14,
+		EditorCommand:          []string{"code"},
+		GitHubReviewQuery:      "is:pr is:open review-requested:@me archived:false",
+		SessionsRefreshSeconds: 3,
 	}
 
 	data, err := os.ReadFile(path)

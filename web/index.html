@@ -57,6 +57,7 @@
   header .spacer { flex: 1; }
   header .status { color: var(--muted); font-size: 12px; }
   header .status.offline { color: var(--accent); }
+  #refresh.pending { border-color: var(--accent); color: var(--accent); font-weight: 600; }
   main { max-width: 1100px; margin: 0 auto; padding: 16px 24px 48px; }
   h2 {
     font-size: 12px; text-transform: uppercase; letter-spacing: .06em;
@@ -136,7 +137,7 @@
 <body>
 <header>
   <h1>devboard</h1>
-  <span class="status" id="status">connecting…</span>
+  <span class="status" id="status">loading…</span>
   <span class="spacer"></span>
   <a class="chip" href="claude://code/needs-input">Waiting in Claude ↗</a>
   <button id="refresh" type="button">Refresh</button>
@@ -146,7 +147,12 @@
 <script>
 const boardEl = document.getElementById('board');
 const statusEl = document.getElementById('status');
+// board is what the page shows; it changes only on a refresh, so cards do
+// not move under the reader. latest is the last board the server pushed.
 let board = null;
+let latest = null;
+let refreshing = false;
+const openDetails = new Set();
 
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c =>
   ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
@@ -254,6 +260,41 @@ function section(title, items, render, emptyText) {
     (items.length ? items.map(render).join('') : `<p class="empty">${emptyText}</p>`);
 }
 
+// What a board needs from you; the other changes (times, commits, idle
+// sessions, the order activity gives the cards) do not call for a refresh.
+function needs(b) {
+  const sorted = list => list.map(x => JSON.stringify(x)).sort();
+  return JSON.stringify([
+    sorted((b.units || []).map(u => [u.branch, u.attention, u.working, sorted((u.sessions || []).map(s => [s.id, s.state]))])),
+    sorted((b.tickets || []).map(t => [t.id, t.status, t.attention])),
+    sorted((b.loose || []).filter(s => s.state !== 'idle').map(s => [s.id, s.state])),
+  ]);
+}
+
+function waitingCount(b) {
+  const units = b.units || [];
+  return units.filter(u => u.attention?.length && !onlyReview(u)).length +
+    (b.tickets || []).filter(t => t.attention?.length).length +
+    (b.loose || []).filter(s => s.state === 'waiting' || s.state === 'review').length;
+}
+
+// The tab title and the Refresh button follow the latest board, without
+// touching the cards.
+function showPending() {
+  const b = latest || board;
+  if (!b) return;
+  const n = waitingCount(b);
+  document.title = n ? `(${n}) devboard` : 'devboard';
+  const pending = board && latest && needs(latest) !== needs(board);
+  const button = document.getElementById('refresh');
+  button.classList.toggle('pending', !!pending && !refreshing);
+  button.textContent = refreshing ? 'Refreshing…' : pending ? 'Refresh • changes' : 'Refresh';
+  button.disabled = refreshing;
+}
+
+const details = (key, summary, body) =>
+  `<details data-key="${key}" ${openDetails.has(key) ? 'open' : ''}><summary>${summary}</summary>${body}</details>`;
+
 function render() {
   if (!board) return;
   const units = board.units || [];
@@ -272,9 +313,6 @@ function render() {
   const ticketsOpen = tickets.filter(t => !t.attention?.length && !t.backlog);
   const backlog = tickets.filter(t => t.backlog);
 
-  const waitingCount = attention.length + ticketsAttention.length + looseActive.filter(s => s.state === 'waiting' || s.state === 'review').length;
-  document.title = waitingCount ? `(${waitingCount}) devboard` : 'devboard';
-
   boardEl.innerHTML =
     (board.errors?.length ? `<div class="errors">${board.errors.map(esc).join('<br>')}</div>` : '') +
     section('Waiting on you', [...attention, ...ticketsAttention], x => x.branch !== undefined ? unitHTML(x) : ticketHTML(x), 'Nothing is waiting on you.') +
@@ -283,10 +321,10 @@ function render() {
     section('In progress', rest, unitHTML) +
     (ticketsOpen.length || backlog.length ? `<h2>Tickets <span class="count">${ticketsOpen.length || ''}</span></h2>` +
       ticketsOpen.map(ticketHTML).join('') +
-      (backlog.length ? `<details><summary>${backlog.length} in ${esc(backlog[0].status)}</summary>${backlog.map(ticketHTML).join('')}</details>` : '') : '') +
+      (backlog.length ? details('backlog', `${backlog.length} in ${esc(backlog[0].status)}`, backlog.map(ticketHTML).join('')) : '') : '') +
     (loose.length ? `<h2>Other sessions <span class="count">${loose.length}</span></h2>` +
       (looseActive.length ? looseCard(looseActive) : '') +
-      (looseIdle.length ? `<details><summary>${looseIdle.length} idle</summary>${looseCard(looseIdle)}</details>` : '') : '');
+      (looseIdle.length ? details('idle', `${looseIdle.length} idle`, looseCard(looseIdle)) : '') : '');
 }
 
 async function post(path, body) {
@@ -302,26 +340,51 @@ boardEl.addEventListener('click', e => {
   const b = e.target.closest('button[data-open]');
   if (b) post('/api/open', {path: b.dataset.path, with: b.dataset.open});
 });
-document.getElementById('refresh').addEventListener('click', () => post('/api/refresh'));
-document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible') post('/api/refresh');
-});
+boardEl.addEventListener('toggle', e => {
+  const key = e.target.dataset?.key;
+  if (key) e.target.open ? openDetails.add(key) : openDetails.delete(key);
+}, true);
 
-function connect() {
-  const es = new EventSource('/events');
-  es.addEventListener('board', e => {
-    board = JSON.parse(e.data);
-    statusEl.textContent = 'live';
-    statusEl.classList.remove('offline');
-    render();
-  });
-  es.onerror = () => {
-    statusEl.textContent = 'offline, retrying…';
-    statusEl.classList.add('offline');
-  };
+function showStatus() {
+  statusEl.textContent = 'updated ' + new Date(board.updated_at).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+  statusEl.classList.remove('offline');
 }
-connect();
-// Keep the relative times fresh between updates.
+
+async function refresh() {
+  if (refreshing) return;
+  refreshing = true;
+  showPending();
+  try {
+    const res = await fetch('/api/refresh', {method: 'POST', headers: {'X-Devboard': '1'}});
+    if (!res.ok) throw new Error(await res.text());
+    board = latest = await res.json();
+    showStatus();
+    render();
+  } catch (err) {
+    statusEl.textContent = 'refresh failed: ' + err.message;
+    statusEl.classList.add('offline');
+  } finally {
+    refreshing = false;
+    showPending();
+  }
+}
+document.getElementById('refresh').addEventListener('click', refresh);
+
+const es = new EventSource('/events');
+es.addEventListener('board', e => {
+  const b = JSON.parse(e.data);
+  if (!b.updated_at) return; // the server has not built a board yet
+  latest = b;
+  if (board && statusEl.classList.contains('offline')) showStatus();
+  showPending();
+});
+es.onerror = () => {
+  statusEl.textContent = 'server unreachable';
+  statusEl.classList.add('offline');
+};
+
+refresh();
+// Keep the relative times fresh; the cards keep their order.
 setInterval(render, 30000);
 </script>
 </body>
