@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"log"
+	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -23,7 +24,9 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	cfg.Notion.redirectURI = "http://" + cfg.Addr + "/notion/callback"
+	// Notion refuses IP addresses in redirect URIs: name the loopback.
+	_, port, _ := net.SplitHostPort(cfg.Addr)
+	cfg.Notion.redirectURI = "http://localhost:" + port + "/notion/callback"
 	cfg.Notion.tokenPath = filepath.Join(filepath.Dir(*configPath), "notion-oauth.json")
 	if len(cfg.Repos) == 0 {
 		log.Printf("no repos in %s: worktrees are not tracked", *configPath)

@@ -87,7 +87,7 @@ devboard reads Notion through a connection created at https://www.notion.so/prof
 
 **OAuth**, when only workspace owners may create API tokens. The token acts as you, limited to the pages you pick when connecting:
 
-1. Create it with the redirect URI `http://127.0.0.1:7777/notion/callback` (match `addr` if you changed it).
+1. Create it with the redirect URI `http://localhost:7777/notion/callback`; Notion refuses IP addresses there. Match the port of `addr` if you changed it.
 2. Put its client ID in `client_id`, and store its client secret in the Keychain, read by `client_secret_command`:
 
    ```bash
