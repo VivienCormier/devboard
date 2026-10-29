@@ -94,6 +94,8 @@
   .chip.attention { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
   .chip.open { background: var(--ok-soft); color: var(--ok); }
   .chip.dirty { background: var(--accent-soft); color: var(--accent); }
+  .chip.ticket { background: var(--review-soft); color: var(--review); }
+  .ticket-id { font-family: var(--mono); font-size: 12px; color: var(--muted); }
   .actions { margin-left: auto; display: flex; gap: 6px; }
   button {
     font: inherit; font-size: 12px;
@@ -177,19 +179,47 @@ function sessionHTML(s) {
   </li>`;
 }
 
+// notion:// links open the desktop app and need no new tab.
+const linkAttrs = url => /^https?:/.test(url) ? `href="${esc(url)}" target="_blank" rel="noopener"` : `href="${esc(url)}"`;
+
+function ticketChip(t) {
+  return `<a class="chip ticket" ${linkAttrs(t.url)} title="${esc(t.title)}">${esc(t.id || 'ticket')} · ${esc(t.status)}</a>`;
+}
+
+function prChip(pr) {
+  const open = pr.state === 'OPEN';
+  const state = open ? (pr.draft ? 'draft' : '') : (prStateLabel[pr.state] || (pr.state || '').toLowerCase());
+  return `<a class="chip ${open && !pr.draft ? 'open' : ''}" ${linkAttrs(pr.url)} title="${esc(pr.title || pr.repo)}">#${esc(pr.number)} ${esc(state)}</a>`;
+}
+
+function ticketHTML(t) {
+  const chips = (t.attention || []).map(a => `<span class="chip attention">${esc(a)}</span>`);
+  chips.push(`<span class="chip">${esc(t.status)}</span>`);
+  if (t.priority) chips.push(`<span class="chip">${esc(t.priority)}</span>`);
+  for (const pr of t.prs || []) chips.push(prChip(pr));
+  chips.push(`<span class="chip" title="last edited">edited ${ago(t.edited)}</span>`);
+  return `<article class="card ${t.attention?.length ? 'attention' : ''}">
+    <div class="row">
+      ${t.id ? `<span class="ticket-id">${esc(t.id)}</span>` : ''}
+      <a ${linkAttrs(t.url)}>${esc(t.title)}</a>
+    </div>
+    <div class="row" style="margin-top:6px">${chips.join('')}</div>
+  </article>`;
+}
+
 function unitHTML(u) {
   const wt = u.worktree;
   const chips = [];
   const pr = u.pr;
   if (pr) {
     const open = pr.state === 'OPEN';
-    const state = open ? (pr.draft ? 'draft' : '') : (prStateLabel[pr.state] || pr.state.toLowerCase());
-    chips.push(`<a class="chip ${open && !pr.draft ? 'open' : ''}" href="${esc(pr.url)}" target="_blank" rel="noopener">#${esc(pr.number)} ${esc(state)}</a>`);
+    chips.push(prChip(pr));
     if (open && pr.review_decision === 'APPROVED') chips.push(`<span class="chip open">approved</span>`);
     // A failing CI is already among the attention reasons.
     if (open && pr.checks && pr.checks !== 'FAILURE' && pr.checks !== 'ERROR') chips.push(`<span class="chip">${checksLabel[pr.checks] || esc(pr.checks.toLowerCase())}</span>`);
     if (pr.review_requested && pr.author) chips.push(`<span class="chip">by ${esc(pr.author)}</span>`);
   }
+  for (const t of u.tickets || []) chips.push(ticketChip(t));
   if (wt) {
     if (wt.dirty) chips.push(`<span class="chip dirty">uncommitted</span>`);
     if (wt.ahead || wt.behind) chips.push(`<span class="chip" title="vs base branch">↑${wt.ahead} ↓${wt.behind}</span>`);
@@ -211,7 +241,8 @@ function unitHTML(u) {
       ${u.repo ? `<span class="repo">${esc(u.repo)}</span>` : ''}
       ${actions}
     </div>
-    ${pr?.title ? `<div class="pr-title"><a href="${esc(pr.url)}" target="_blank" rel="noopener">${esc(pr.title)}</a></div>` : ''}
+    ${pr?.title ? `<div class="pr-title"><a href="${esc(pr.url)}" target="_blank" rel="noopener">${esc(pr.title)}</a></div>`
+      : u.tickets?.length ? `<div class="pr-title"><a ${linkAttrs(u.tickets[0].url)}>${esc(u.tickets[0].title)}</a></div>` : ''}
     <div class="row" style="margin-top:6px">${chips.join('')}</div>
     ${u.sessions?.length ? `<ul class="sessions">${u.sessions.map(sessionHTML).join('')}</ul>` : ''}
   </article>`;
@@ -224,8 +255,8 @@ function section(title, items, render, emptyText) {
 }
 
 function render() {
-  if (!board || !board.units) return;
-  const units = board.units;
+  if (!board) return;
+  const units = board.units || [];
   const attention = units.filter(u => u.attention?.length && !onlyReview(u));
   const reviews = units.filter(onlyReview);
   const working = units.filter(u => !u.attention?.length && u.working);
@@ -236,15 +267,23 @@ function render() {
   const looseIdle = loose.filter(s => s.state === 'idle');
   const looseCard = list => `<article class="card"><ul class="sessions" style="margin:0">${list.map(sessionHTML).join('')}</ul></article>`;
 
-  const waitingCount = attention.length + looseActive.filter(s => s.state === 'waiting' || s.state === 'review').length;
+  const tickets = board.tickets || [];
+  const ticketsAttention = tickets.filter(t => t.attention?.length);
+  const ticketsOpen = tickets.filter(t => !t.attention?.length && !t.backlog);
+  const backlog = tickets.filter(t => t.backlog);
+
+  const waitingCount = attention.length + ticketsAttention.length + looseActive.filter(s => s.state === 'waiting' || s.state === 'review').length;
   document.title = waitingCount ? `(${waitingCount}) devboard` : 'devboard';
 
   boardEl.innerHTML =
     (board.errors?.length ? `<div class="errors">${board.errors.map(esc).join('<br>')}</div>` : '') +
-    section('Waiting on you', attention, unitHTML, 'Nothing is waiting on you.') +
+    section('Waiting on you', [...attention, ...ticketsAttention], x => x.branch !== undefined ? unitHTML(x) : ticketHTML(x), 'Nothing is waiting on you.') +
     section('Reviews requested', reviews, unitHTML) +
     section('Claude is working', working, unitHTML) +
     section('In progress', rest, unitHTML) +
+    (ticketsOpen.length || backlog.length ? `<h2>Tickets <span class="count">${ticketsOpen.length || ''}</span></h2>` +
+      ticketsOpen.map(ticketHTML).join('') +
+      (backlog.length ? `<details><summary>${backlog.length} in ${esc(backlog[0].status)}</summary>${backlog.map(ticketHTML).join('')}</details>` : '') : '') +
     (loose.length ? `<h2>Other sessions <span class="count">${loose.length}</span></h2>` +
       (looseActive.length ? looseCard(looseActive) : '') +
       (looseIdle.length ? `<details><summary>${looseIdle.length} idle</summary>${looseCard(looseIdle)}</details>` : '') : '');

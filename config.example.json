@@ -9,5 +9,14 @@
   "sessions_refresh_seconds": 3,
   "worktrees_refresh_seconds": 30,
   "github_refresh_seconds": 90,
-  "github_review_query": "is:pr is:open review-requested:@me archived:false"
+  "github_review_query": "is:pr is:open review-requested:@me archived:false",
+  "notion": {
+    "database_id": "0123456789abcdef0123456789abcdef",
+    "user_id": "00000000-0000-0000-0000-000000000000",
+    "assignee_property": "Assignee",
+    "priority_property": "Priority",
+    "token_command": ["security", "find-generic-password", "-s", "devboard-notion", "-w"],
+    "open_in_app": true,
+    "refresh_seconds": 120
+  }
 }

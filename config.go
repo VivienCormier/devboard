@@ -37,6 +37,9 @@ type Config struct {
 	// user-review-requested:@me to keep only those addressed to me.
 	GitHubReviewQuery string `json:"github_review_query"`
 
+	// Notion is the tickets database; tickets are not tracked without it.
+	Notion NotionConfig `json:"notion"`
+
 	// Refresh intervals, in seconds.
 	SessionsRefreshSeconds  int64 `json:"sessions_refresh_seconds"`
 	WorktreesRefreshSeconds int64 `json:"worktrees_refresh_seconds"`
@@ -70,6 +73,7 @@ func loadConfig(path string) (Config, error) {
 		SessionsRefreshSeconds:  3,
 		WorktreesRefreshSeconds: 30,
 		GitHubRefreshSeconds:    90,
+		Notion:                  NotionConfig{RefreshSeconds: 120},
 	}
 
 	data, err := os.ReadFile(path)
@@ -81,6 +85,10 @@ func loadConfig(path string) (Config, error) {
 	}
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return cfg, fmt.Errorf("parse %s: %w", path, err)
+	}
+
+	if cfg.Notion.DatabaseID != "" && (cfg.Notion.UserID == "" || cfg.Notion.AssigneeProperty == "") {
+		return cfg, fmt.Errorf("%s: notion needs user_id and assignee_property", path)
 	}
 
 	cfg.ClaudeSessionsDir = expandHome(cfg.ClaudeSessionsDir, home)
