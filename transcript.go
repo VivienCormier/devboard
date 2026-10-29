@@ -2,34 +2,41 @@ package main
 
 import (
 	"bufio"
-	"bytes"
+	"cmp"
 	"encoding/json"
+	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 )
 
-// transcriptTail bounds how much of a transcript is read: every message
-// carries the branch, and a tool call waiting on its result is near the end.
-const transcriptTail = 256 << 10
-
 // transcript is what devboard reads from a session's CLI transcript
-// (~/.claude/projects/<encoded cwd>/<cli session id>.jsonl).
+// (~/.claude/projects/<encoded cwd>/<cli session id>.jsonl). The file only
+// grows: it is read once, then only what was appended since.
 type transcript struct {
 	path  string
 	mtime time.Time
+	// size is how far the file was read, up to its last complete line.
+	size int64
 	// branch is the branch checked out in cwd at the last message.
 	branch string
 	// pending is the last tool call of the main thread still waiting for its
 	// result, if any.
 	pending *pendingTool
+	// open are the main thread's tool calls without a result yet, by id.
+	open map[string]*pendingTool
+	seq  int
+	// edited are the files the session changed with its edit tools.
+	edited map[string]bool
 }
 
 type pendingTool struct {
 	name string
 	// detail is the question asked, or what the tool call is about.
 	detail string
+	seq    int
 }
 
 // questionTools wait for an answer from the person by design: a call to one
@@ -75,71 +82,113 @@ type contentBlock struct {
 	Input     json.RawMessage `json:"input"`
 }
 
-// readTranscript parses the end of a transcript. The first line of the tail
-// is usually cut and is skipped.
-func readTranscript(path string, info os.FileInfo) transcript {
-	t := transcript{path: path, mtime: info.ModTime()}
+// editTools change files; their input names the file.
+var editTools = map[string]bool{"Edit": true, "MultiEdit": true, "Write": true, "NotebookEdit": true}
+
+// maxEdited bounds the edited files remembered per session.
+const maxEdited = 500
+
+// readTranscript reads what was appended to a transcript since prev was
+// read, or the whole file when it is new or was rewritten.
+func readTranscript(prev transcript, path string, info os.FileInfo) transcript {
+	t := prev
+	if t.path != path || info.Size() < t.size {
+		t = transcript{path: path}
+	}
+	t.mtime = info.ModTime()
+	// The maps are shared with sessions built from prev: copy them.
+	t.open = maps.Clone(t.open)
+	t.edited = maps.Clone(t.edited)
+	if t.open == nil {
+		t.open = map[string]*pendingTool{}
+	}
+	if t.edited == nil {
+		t.edited = map[string]bool{}
+	}
+
 	f, err := os.Open(path)
 	if err != nil {
 		return t
 	}
 	defer f.Close()
-	offset := max(info.Size()-transcriptTail, 0)
-	buf := make([]byte, info.Size()-offset)
-	n, _ := f.ReadAt(buf, offset)
-	buf = buf[:n]
-	if offset > 0 {
-		if i := bytes.IndexByte(buf, '\n'); i >= 0 {
-			buf = buf[i+1:]
-		}
+	if _, err := f.Seek(t.size, io.SeekStart); err != nil {
+		return t
 	}
-
-	pending := map[string]*pendingTool{}
-	var order []string
-	lines := bufio.NewScanner(bytes.NewReader(buf))
-	lines.Buffer(nil, transcriptTail)
-	for lines.Scan() {
-		var line transcriptLine
-		if json.Unmarshal(lines.Bytes(), &line) != nil || line.IsSidechain {
-			continue
+	r := bufio.NewReaderSize(f, 1<<20)
+	for {
+		line, err := r.ReadBytes('\n')
+		if err != nil {
+			break // a line still being written is read next time
 		}
-		if line.Type != "assistant" && line.Type != "user" {
-			continue
-		}
-		if line.GitBranch != "" {
-			t.branch = line.GitBranch
-		}
-		var blocks []contentBlock
-		if json.Unmarshal(line.Message.Content, &blocks) != nil {
-			continue
-		}
-		for _, b := range blocks {
-			switch b.Type {
-			case "tool_use":
-				pending[b.ID] = &pendingTool{name: b.Name, detail: toolDetail(b)}
-				order = append(order, b.ID)
-			case "tool_result":
-				delete(pending, b.ToolUseID)
-			}
-		}
+		t.size += int64(len(line))
+		t.readLine(line)
 	}
 
 	// The latest question wins over a call that may be waiting for an
 	// approval, then the latest call.
-	for i := len(order) - 1; i >= 0; i-- {
-		p := pending[order[i]]
-		if p == nil {
-			continue
-		}
-		if p.isQuestion() {
-			t.pending = p
-			break
-		}
-		if t.pending == nil {
+	t.pending = nil
+	for _, p := range t.open {
+		switch {
+		case t.pending == nil,
+			p.isQuestion() && !t.pending.isQuestion(),
+			p.isQuestion() == t.pending.isQuestion() && p.seq > t.pending.seq:
 			t.pending = p
 		}
 	}
 	return t
+}
+
+func (t *transcript) readLine(data []byte) {
+	var line transcriptLine
+	if json.Unmarshal(data, &line) != nil || line.Type != "assistant" && line.Type != "user" {
+		return
+	}
+	if line.GitBranch != "" && !line.IsSidechain {
+		t.branch = line.GitBranch
+	}
+	var blocks []contentBlock
+	if json.Unmarshal(line.Message.Content, &blocks) != nil {
+		return
+	}
+	for _, b := range blocks {
+		switch b.Type {
+		case "tool_use":
+			// A subagent's edits are the session's work too.
+			if editTools[b.Name] && len(t.edited) < maxEdited {
+				if path := editedFile(b.Input); path != "" {
+					t.edited[path] = true
+				}
+			}
+			if !line.IsSidechain {
+				t.seq++
+				t.open[b.ID] = &pendingTool{name: b.Name, detail: toolDetail(b), seq: t.seq}
+			}
+		case "tool_result":
+			delete(t.open, b.ToolUseID)
+		}
+	}
+}
+
+// editedFile returns the file an edit tool changed, unless it is one of
+// Claude's own files (memory, plans) or a temporary file: those say
+// nothing about the code the session works on.
+func editedFile(input json.RawMessage) string {
+	var in struct {
+		FilePath     string `json:"file_path"`
+		NotebookPath string `json:"notebook_path"`
+	}
+	json.Unmarshal(input, &in)
+	path := cmp.Or(in.FilePath, in.NotebookPath)
+	if !filepath.IsAbs(path) {
+		return ""
+	}
+	home, _ := os.UserHomeDir()
+	for _, dir := range []string{filepath.Join(home, ".claude"), "/tmp", "/private", "/var/folders"} {
+		if strings.HasPrefix(path, dir+string(filepath.Separator)) {
+			return ""
+		}
+	}
+	return filepath.Clean(path)
 }
 
 func toolDetail(b contentBlock) string {
@@ -195,7 +244,7 @@ func (sc *sessionScanner) transcript(d desktopSession) transcript {
 	if cached.path == path && cached.mtime.Equal(info.ModTime()) {
 		return cached
 	}
-	t := readTranscript(path, info)
+	t := readTranscript(cached, path, info)
 	sc.transcripts[d.CLISessionID] = t
 	return t
 }

@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"io/fs"
 	"log"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 )
@@ -70,8 +72,10 @@ type Session struct {
 	// gitBranch is the branch checked out in cwd at the last message, read
 	// from the CLI transcript.
 	gitBranch string
-	branches  []string
-	prs       []PR
+	// edited are the files the session changed, from the transcript.
+	edited   []string
+	branches []string
+	prs      []PR
 }
 
 type PR struct {
@@ -114,6 +118,7 @@ func (d desktopSession) toSession(now time.Time, t transcript) Session {
 		Activity:  time.UnixMilli(d.LastActivityAt),
 		URL:       "claude://code/continue?session=" + d.SessionID,
 		gitBranch: t.branch,
+		edited:    slices.Sorted(maps.Keys(t.edited)),
 	}
 	if s.Title == "" {
 		s.Title = filepath.Base(d.Cwd)

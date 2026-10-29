@@ -18,7 +18,7 @@ func writeTranscript(t *testing.T, lines ...string) transcript {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return readTranscript(path, info)
+	return readTranscript(transcript{}, path, info)
 }
 
 const (
@@ -97,5 +97,42 @@ func TestPendingToolState(t *testing.T) {
 				t.Errorf("state = %s approval = %v, want %s %v", s.State, s.Approval, tt.state, tt.approval)
 			}
 		})
+	}
+}
+
+func TestReadTranscriptIncrementally(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	write := func(content string) os.FileInfo {
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.WriteString(content)
+		f.Close()
+		info, _ := os.Stat(path)
+		return info
+	}
+	edit := `{"type":"assistant","gitBranch":"feat/x","message":{"content":[{"type":"tool_use","id":"e1","name":"Edit","input":{"file_path":"/code/app/main.go"}}]}}`
+	memory := `{"type":"assistant","isSidechain":true,"message":{"content":[{"type":"tool_use","id":"e2","name":"Write","input":{"file_path":"` + os.Getenv("HOME") + `/.claude/memory/note.md"}}]}}`
+
+	// The last line is still being written: it is read once complete.
+	got := readTranscript(transcript{}, path, write(userText+"\n"+bashCall+"\n"+edit[:40]))
+	if got.pending == nil || got.pending.name != "Bash" {
+		t.Fatalf("pending = %+v, want Bash", got.pending)
+	}
+	got = readTranscript(got, path, write(edit[40:]+"\n"+memory+"\n"+bashResult+"\n"))
+	if got.pending == nil || got.pending.name != "Edit" {
+		t.Errorf("pending = %+v, want the Edit still open", got.pending)
+	}
+	if !got.edited["/code/app/main.go"] || len(got.edited) != 1 {
+		t.Errorf("edited = %v, want main.go only, not Claude's own files", got.edited)
+	}
+
+	// A rewritten file is read again from the start.
+	os.WriteFile(path, []byte(userText+"\n"), 0o600)
+	info, _ := os.Stat(path)
+	got = readTranscript(got, path, info)
+	if got.pending != nil || len(got.edited) != 0 {
+		t.Errorf("after a rewrite: pending %+v, edited %v", got.pending, got.edited)
 	}
 }

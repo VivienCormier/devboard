@@ -295,6 +295,27 @@ func sessionBranches(s Session, worktrees []Worktree, base map[string]bool) []st
 		slices.Sort(branches)
 		return slices.Compact(branches)
 	}
+
+	// The branch checked out where the session started is its work only if
+	// it changed files there. A session that edited files elsewhere only
+	// (another repository, another worktree) belongs to the worktrees it
+	// edited, or to no branch.
+	if len(s.edited) > 0 {
+		root := s.Cwd
+		if wt := worktreeFor(s.Cwd, worktrees); wt != nil {
+			root = wt.Path
+		}
+		if !slices.ContainsFunc(s.edited, func(path string) bool { return within(path, root) }) {
+			for _, path := range s.edited {
+				if wt := worktreeFor(path, worktrees); wt != nil && !wt.IsMain && wt.Branch != "" && !base[wt.Branch] {
+					branches = append(branches, wt.Branch)
+				}
+			}
+			slices.Sort(branches)
+			return slices.Compact(branches)
+		}
+	}
+
 	if s.gitBranch != "" && s.gitBranch != "HEAD" && !base[s.gitBranch] {
 		return []string{s.gitBranch}
 	}
@@ -317,13 +338,18 @@ func worktreeFor(dir string, worktrees []Worktree) *Worktree {
 	var best *Worktree
 	for i := range worktrees {
 		p := worktrees[i].Path
-		if dir == p || strings.HasPrefix(dir, p+string(filepath.Separator)) {
+		if within(dir, p) {
 			if best == nil || len(p) > len(best.Path) {
 				best = &worktrees[i]
 			}
 		}
 	}
 	return best
+}
+
+// within reports whether path is dir or inside it.
+func within(path, dir string) bool {
+	return path == dir || strings.HasPrefix(path, dir+string(filepath.Separator))
 }
 
 func sortSessions(sessions []Session) []Session {
