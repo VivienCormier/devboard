@@ -5,6 +5,7 @@ A local dashboard of what is waiting on you across your Claude desktop sessions,
 Each line is a branch. Under it you find its worktree, its pull request and every Claude session working on it, whether that's the one writing the code, the one addressing review comments, or the one doing your own review. Lines that need you come first:
 
 - a Claude session asked you a question or is blocked on you;
+- a Claude session seems stopped on a tool permission prompt;
 - a Claude session finished work that is ready for review;
 - your pull request has changes requested, unresolved review threads where someone else spoke last, a failing CI or a merge conflict;
 - your pull request is approved, green and mergeable;
@@ -21,7 +22,7 @@ devboard is a single Go binary with no dependencies. It reads local files, never
 | Source | What is read | Refresh |
 |---|---|---|
 | Claude desktop app | `~/Library/Application Support/Claude/claude-code-sessions/**/local_*.json`: title, state, linked pull requests, branches written | every 3 s, only changed files |
-| Claude Code transcripts | the last `gitBranch` of `~/.claude/projects/*/<session>.jsonl` | with the session |
+| Claude Code transcripts | the end of `~/.claude/projects/*/<session>.jsonl`: the last `gitBranch`, and the tool calls still waiting for their result | with the session, only changed files |
 | Git worktrees | `wt list --format=json` ([worktrunk](https://worktrunk.dev)), falling back to `git worktree list` | every 30 s |
 | GitHub | one GraphQL query through `gh api graphql`: your open and recently closed pull requests, and those waiting on your review | every 90 s |
 
@@ -30,6 +31,11 @@ The GitHub query costs about 10 rate-limit points out of the 5,000 an hour GitHu
 A pull request known from GitHub wins over what a session record remembers: a session keeps the state its pull requests had when it last looked.
 
 The page receives updates through server-sent events, so it stays live without reloading. It also refreshes when the tab gets the focus again.
+
+A question or a permission prompt stops a turn without ending it, so the session record still describes a running turn. The transcript shows what it waits on:
+
+- a call to `AskUserQuestion` or `ExitPlanMode` with no result is a question for you, shown as waiting with the question;
+- a call to a tool that can ask for a permission (Bash, WebFetch, MCP tools; file edits only in the `default` and `plan` permission modes) that has had no result for 20 s, with nothing written to the transcript since, is shown as "approval?". A long-running command looks exactly the same, so this one is a guess.
 
 Sessions open through the app's `claude://code/continue?session=<id>` link.
 
@@ -66,7 +72,7 @@ The server only answers on the loopback interface and rejects any other `Host` h
 
 ## Roadmap
 
-- Pending tool permissions and Claude Code CLI sessions.
+- Claude Code CLI sessions, which have no desktop session record.
 - Notion tickets and Slack mentions.
 - Start a Claude session from a ticket or a mention (`claude://code/new?q=…&folder=…`).
 - A `launchd` agent to keep it running.

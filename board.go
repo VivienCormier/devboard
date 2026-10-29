@@ -145,7 +145,11 @@ func buildBoard(sessions []Session, worktrees []Worktree, gh *GitHub, errs []str
 		for _, s := range u.Sessions {
 			switch s.State {
 			case StateWaiting:
-				u.Attention = append(u.Attention, "Claude is waiting for you")
+				if s.Approval {
+					u.Attention = append(u.Attention, "Claude may need a tool approval")
+				} else {
+					u.Attention = append(u.Attention, "Claude is waiting for you")
+				}
 			case StateReview:
 				u.Attention = append(u.Attention, "Session ready for review")
 			case StateWorking:

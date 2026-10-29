@@ -168,7 +168,7 @@ const checksLabel = {SUCCESS: 'CI ✓', PENDING: 'CI running', EXPECTED: 'CI wai
 const onlyReview = u => u.pr?.review_requested && u.attention?.length === 1;
 
 function sessionHTML(s) {
-  const label = stateLabel[s.state];
+  const label = s.approval ? 'approval?' : stateLabel[s.state];
   return `<li class="session ${esc(s.state)}">
     <span class="dot ${esc(s.state)}"></span>
     <span><a class="title" href="${esc(s.url)}">${esc(s.title)}</a>${label ? `<span class="state ${esc(s.state)}">${label}</span>` : ''}</span>

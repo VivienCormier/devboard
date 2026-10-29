@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"io/fs"
 	"log"
@@ -23,6 +22,7 @@ type desktopSession struct {
 	LastActivityAt    int64  `json:"lastActivityAt"`
 	LastTurnEdgeAt    int64  `json:"lastTurnEdgeAt"`
 	LatestUserFrameAt int64  `json:"latestUserFrameAt"`
+	PermissionMode    string `json:"permissionMode"`
 	PRs               []struct {
 		Number int64  `json:"prNumber"`
 		Repo   string `json:"repo"`
@@ -62,6 +62,11 @@ type Session struct {
 	Activity time.Time `json:"activity"`
 	URL      string    `json:"url"`
 
+	// Approval marks a session that seems stopped on a permission prompt:
+	// a tool call that can ask for one has been waiting for its result.
+	// The transcript cannot tell it from a long-running command.
+	Approval bool `json:"approval,omitempty"`
+
 	// gitBranch is the branch checked out in cwd at the last message, read
 	// from the CLI transcript.
 	gitBranch string
@@ -95,14 +100,20 @@ type PR struct {
 // running, so a crashed session does not stay "working" forever.
 const workingWindow = 15 * time.Minute
 
-func (d desktopSession) toSession(now time.Time) Session {
+// approvalAfter is how long a tool call that can ask for a permission must
+// have been waiting, with nothing written to the transcript since, before
+// the session is shown as probably waiting for an approval.
+const approvalAfter = 20 * time.Second
+
+func (d desktopSession) toSession(now time.Time, t transcript) Session {
 	s := Session{
-		ID:       d.SessionID,
-		Title:    d.Title,
-		Cwd:      d.Cwd,
-		State:    StateIdle,
-		Activity: time.UnixMilli(d.LastActivityAt),
-		URL:      "claude://code/continue?session=" + d.SessionID,
+		ID:        d.SessionID,
+		Title:     d.Title,
+		Cwd:       d.Cwd,
+		State:     StateIdle,
+		Activity:  time.UnixMilli(d.LastActivityAt),
+		URL:       "claude://code/continue?session=" + d.SessionID,
+		gitBranch: t.branch,
 	}
 	if s.Title == "" {
 		s.Title = filepath.Base(d.Cwd)
@@ -111,11 +122,25 @@ func (d desktopSession) toSession(now time.Time) Session {
 	// lastTurnEdgeAt moves at both ends of a turn; a user message at or
 	// after it means the turn it started has not ended yet. The summary and
 	// wrap-up are cleared while a turn runs.
-	running := d.PostTurnSummary == nil && d.TurnWrapUp == nil &&
-		d.LatestUserFrameAt >= d.LastTurnEdgeAt-2000 &&
-		now.Sub(s.Activity) < workingWindow
+	turnOpen := d.PostTurnSummary == nil && d.TurnWrapUp == nil &&
+		d.LatestUserFrameAt >= d.LastTurnEdgeAt-2000
+	running := turnOpen && now.Sub(s.Activity) < workingWindow
 
+	// A question or a permission prompt stops a turn without ending it, so
+	// the session record still describes a running turn: only the
+	// transcript shows the tool call waiting on the person. The working
+	// window does not apply, since they can wait for hours.
 	switch {
+	case turnOpen && t.pending.isQuestion():
+		s.State = StateWaiting
+		s.Detail = t.pending.detail
+	case turnOpen && t.pending.mayAskApproval(d.PermissionMode) && now.Sub(t.mtime) >= approvalAfter:
+		s.State = StateWaiting
+		s.Approval = true
+		s.Detail = t.pending.name
+		if t.pending.detail != "" {
+			s.Detail += ": " + t.pending.detail
+		}
 	case running:
 		s.State = StateWorking
 	case d.TurnWrapUp != nil && d.TurnWrapUp.Ask != "":
@@ -156,18 +181,12 @@ type sessionScanner struct {
 	projectsDir string
 	maxAge      time.Duration
 	cache       map[string]cachedSession
-	transcripts map[string]cachedBranch
+	transcripts map[string]transcript
 }
 
 type cachedSession struct {
 	mtime   time.Time
 	session desktopSession
-}
-
-type cachedBranch struct {
-	path   string
-	mtime  time.Time
-	branch string
 }
 
 func newSessionScanner(dir, projectsDir string, maxAge time.Duration) *sessionScanner {
@@ -176,71 +195,8 @@ func newSessionScanner(dir, projectsDir string, maxAge time.Duration) *sessionSc
 		projectsDir: projectsDir,
 		maxAge:      maxAge,
 		cache:       map[string]cachedSession{},
-		transcripts: map[string]cachedBranch{},
+		transcripts: map[string]transcript{},
 	}
-}
-
-// transcriptTail bounds how much of a transcript is read to find its last
-// gitBranch: every message carries it, so the end of the file is enough.
-const transcriptTail = 256 << 10
-
-var gitBranchKey = []byte(`"gitBranch":"`)
-
-// gitBranch returns the branch recorded on the last message of the session's
-// CLI transcript (~/.claude/projects/<encoded cwd>/<cli session id>.jsonl).
-func (sc *sessionScanner) gitBranch(d desktopSession) string {
-	if d.CLISessionID == "" {
-		return ""
-	}
-	cached := sc.transcripts[d.CLISessionID]
-	path := cached.path
-	if path == "" {
-		path = filepath.Join(sc.projectsDir, encodeProjectDir(d.Cwd), d.CLISessionID+".jsonl")
-		if _, err := os.Stat(path); err != nil {
-			matches, _ := filepath.Glob(filepath.Join(sc.projectsDir, "*", d.CLISessionID+".jsonl"))
-			if len(matches) == 0 {
-				return ""
-			}
-			path = matches[0]
-		}
-	}
-	info, err := os.Stat(path)
-	if err != nil {
-		delete(sc.transcripts, d.CLISessionID)
-		return ""
-	}
-	if cached.path == path && cached.mtime.Equal(info.ModTime()) {
-		return cached.branch
-	}
-
-	branch := ""
-	if f, err := os.Open(path); err == nil {
-		offset := max(info.Size()-transcriptTail, 0)
-		buf := make([]byte, info.Size()-offset)
-		if n, _ := f.ReadAt(buf, offset); n > 0 {
-			buf = buf[:n]
-			if i := bytes.LastIndex(buf, gitBranchKey); i >= 0 {
-				rest := buf[i+len(gitBranchKey):]
-				if j := bytes.IndexByte(rest, '"'); j >= 0 {
-					branch = string(rest[:j])
-				}
-			}
-		}
-		f.Close()
-	}
-	sc.transcripts[d.CLISessionID] = cachedBranch{path: path, mtime: info.ModTime(), branch: branch}
-	return branch
-}
-
-// encodeProjectDir mirrors how Claude Code names a project's transcript
-// folder: every character other than a letter, digit or dash becomes a dash.
-func encodeProjectDir(cwd string) string {
-	return strings.Map(func(r rune) rune {
-		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' {
-			return r
-		}
-		return '-'
-	}, cwd)
 }
 
 func (sc *sessionScanner) scan(now time.Time) []Session {
@@ -284,8 +240,8 @@ func (sc *sessionScanner) scan(now time.Time) []Session {
 		if d.IsArchived || now.Sub(time.UnixMilli(d.LastActivityAt)) > sc.maxAge {
 			return nil
 		}
-		s := d.toSession(now)
-		s.gitBranch = sc.gitBranch(d)
+		t := sc.transcript(d)
+		s := d.toSession(now, t)
 		sessions = append(sessions, s)
 		return nil
 	})
